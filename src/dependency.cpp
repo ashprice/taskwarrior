@@ -42,39 +42,36 @@
 bool dependencyIsCircular(const Task& task) {
   // A new task has no UUID assigned yet, and therefore cannot be part of any
   // dependency chain.
-  if (task.has("uuid")) {
-    auto task_uuid = task.get("uuid");
+  if (!task.has("uuid")) return false;
 
-    std::stack<Task> s;
-    s.push(task);
+  const auto& task_uuid = task.get_ref("uuid");
+  auto& tdb2 = Context::getContext().tdb2;
+  const auto& pending = tdb2.pending_tasks();
 
-    std::unordered_set<std::string> visited;
-    visited.insert(task_uuid);
+  std::unordered_set<std::string> visited{task_uuid};
 
-    while (!s.empty()) {
-      Task& current = s.top();
-      auto deps_current = current.getDependencyUUIDs();
+  // Vector of dependency UUIDs. The initial set is taken from the task object,
+  // because there may have been a dependency added which is not yet in the cache.
+  // Subsequent searches use the _pending_tasks cache.
+  // This will always terminate as we do not return any UUID twice.
+  std::vector<std::string> to_visit;
+  for (const auto& dep : task.getDependencyUUIDs()) {
+    if (dep == task_uuid) return true;
+    if (visited.insert(dep).second) to_visit.push_back(dep);
+  }
 
-      // This is a basic depth first search that always terminates given the
-      // fact that we do not visit any task twice
-      for (const auto& dep : deps_current) {
-        if (Context::getContext().tdb2.get(dep, current)) {
-          auto current_uuid = current.get("uuid");
+  while (!to_visit.empty()) {
+    std::string dep_uuid = std::move(to_visit.back());
+    to_visit.pop_back();
 
-          if (task_uuid == current_uuid) {
-            // Cycle found, initial task reached for the second time!
-            return true;
-          }
+    auto dep_idx = tdb2.pending_index_of(dep_uuid);
+    if (dep_idx == SIZE_MAX) continue;
 
-          if (visited.find(current_uuid) == visited.end()) {
-            // Push the task to the stack, if it has not been processed yet
-            s.push(current);
-            visited.insert(current_uuid);
-          }
-        }
-      }
+    const auto& deps = pending[dep_idx].getDependencyUUIDs();
 
-      s.pop();
+    for (const auto& dep : deps) {
+      if (dep == task_uuid) return true;
+      if (visited.insert(dep).second) to_visit.push_back(dep);
     }
   }
 
